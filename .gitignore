@@ -1,7 +1,1 @@
 *
-
-# track this files
-!/ns-3.40/scratch/*.cc
-!/ns-3.40/scratch/*.cpp
-
-!.gitignore
