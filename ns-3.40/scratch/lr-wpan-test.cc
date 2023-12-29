@@ -1,5 +1,12 @@
+#include <ns3/core-module.h>
 #include <ns3/simulator.h>
 #include <ns3/lr-wpan-module.h>
+#include <ns3/network-module.h>
+
+#include <ns3/log.h>
+
+#include <ns3/csma-channel.h>
+
 
 // channel
 #include <ns3/single-model-spectrum-channel.h>
@@ -13,172 +20,164 @@
 
 #include <iostream>
 
+#define COORDINATOR_PAN_ID 5
+
 using namespace ns3;
 
-/**
- * @brief 데이터 수신 완료 시 호출되는 콜백 함수
- * 
- * @param params McpsDataIndicationParams
- * @param p Ptr<Packet>
- */
-static void DataIndication(McpsDataIndicationParams params, Ptr<Packet> p)
+// Simulator::ScheduleWithContext ID
+static int eventId = 0;
+
+/// @brief Node로부터 LrWpanNetDevice를 형변환하여 반환하는 함수
+/// @param lrWpanNode 대상 노드
+/// @param deviceIndex NetDevice의 인덱스
+/// @return LrWpanNetDevice로 형변환된 대상 노드의 NetDevice Ptr
+static Ptr<LrWpanNetDevice> getLrWpanDevice(Ptr<Node> lrWpanNode, int deviceIndex)
+{
+    return DynamicCast<LrWpanNetDevice>(lrWpanNode->GetDevice(deviceIndex));
+}
+
+
+/// @brief MCPS-DATA.request 이벤트를 등록합니다.
+/// @param params McpsDataRequestParams
+/// @param lrWpanMac Ptr<LrWpanMac>
+/// @param packet Ptr<Packet>
+/// @param delay Time
+static void SetMcpsDataRequest(McpsDataRequestParams params, Ptr<LrWpanMac> lrWpanMac, std::string message, Time delay)
+{
+    Simulator::ScheduleWithContext(
+        eventId++,
+        delay,
+        &LrWpanMac::McpsDataRequest,
+        lrWpanMac,
+        params,
+        Create<Packet>((uint8_t*) message.c_str(), message.length())
+    );
+}
+
+/// @brief MCPS-DATA.request params 구조체를 만듭니다.
+/// @param dstAddr 목적지 MAC 주소
+/// @param dstPanId 목적지 PAN ID
+/// @param addrMode LrWpanAddressMode
+/// @param txOption TX_OPTION_ACK, TX_OPTION_NONE: TX_OPTION_GTS, TX_OPTION_INDIRECT는 현재 미지원
+/// @return McpsDatRequestParams
+static McpsDataRequestParams createMcpsDataRequestParams(Mac16Address dstAddr, int dstPanId, LrWpanAddressMode addrMode, int txOption)
+{
+    static int msduHandle = 0;
+
+    McpsDataRequestParams params;
+    params.m_dstAddrMode = params.m_srcAddrMode = addrMode;
+    params.m_dstAddr = dstAddr;
+    params.m_dstPanId = dstPanId;
+    params.m_txOptions = txOption;
+    params.m_msduHandle = msduHandle++;
+
+    return params;
+}
+
+//////////////////// CALLBACKS ////////////////////
+
+static void McpsDataConfirm(McpsDataConfirmParams params)
+{
+    NS_LOG_UNCOND(Simulator::Now().GetSeconds() << ": MCPS-DATA.confirm occured, status: " << params.m_status);
+}
+
+static void McpsDataIndication(McpsDataIndicationParams params, Ptr<Packet> p)
 {
     // 패킷 데이터 추출하기
     uint8_t* buffer = new u_int8_t[p->GetSize()];       // 버퍼 배열
     p->CopyData(buffer, p->GetSize());                  // 버퍼에 패킷 내용 복사
-    std::string string = std::string((char*) buffer, p->GetSize()); // 버퍼를 문자열로 변환
+    std::string message = std::string((char*) buffer, p->GetSize()); // 버퍼를 문자열로 변환
     delete[] buffer;                                    // 버퍼 할당 해제
 
-    NS_LOG_UNCOND("Received packet of size "
-        << p->GetSize()
-        << "\tTime: "
-        << Simulator::Now().As(Time::S)
-        << "\tPacket content: \""
-        << string << "\""
-    );
+    NS_LOG_UNCOND(Simulator::Now().GetSeconds() << ": " << params.m_dstAddr << " RECEIVED " << "\"" << message << "\"" << " FROM " << params.m_srcAddr);
 }
 
-/**
- * @brief 데이터 송신 성공시 호출되는 콜백 함수
- * 
- * @param params McpsDataConfirmParams
- */
-static void mcpsDataConfirm(McpsDataConfirmParams params)
+///////////////////////////////////////////////////
+
+int main(int argc, char* argv[])
 {
-    NS_LOG_UNCOND("Data Transfer Completed." << std::endl);
-}
+    LogComponentEnable("LrWpanMac", LOG_LEVEL_DEBUG);
 
+    // Container, Helper
+    NodeContainer pan;
+    LrWpanHelper lrWpanHelper;
 
-int main(int argc, char* argv[]) {
-    /* 
-     * object.h의 CreateObject<T>로 인스턴스 생성하는듯
-     * 생성자에 매개변수가 필요한 경우 Create<T>(args)를 사용
-     * 얘는 Ptr로 받는데, Ptr은 <T>타입 스마트 포인터를 지원
-    */
+    // 노드가 10개인 PAN 네트워크 생성
+    pan.Create(10);
+    NetDeviceContainer netDevices = lrWpanHelper.Install(pan);
+    lrWpanHelper.CreateAssociatedPan(netDevices, COORDINATOR_PAN_ID);   // 첫 번째 노드가 코디네이터, PAN ID는 5
 
-    // 1. Node 생성
-        Ptr<Node> n0 = CreateObject<Node>();
-        Ptr<Node> n1 = CreateObject<Node>();
-        Ptr<Node> n2 = CreateObject<Node>();
+    // 코디네이터
+    Ptr<Node> coordinator = pan.Get(0);
+    Ptr<LrWpanNetDevice> coordinatorNetDevice = getLrWpanDevice(coordinator, 0);
 
-    // 2. NetDevice 생성
-        Ptr<LrWpanNetDevice> dev0 = CreateObject<LrWpanNetDevice>();
-        Ptr<LrWpanNetDevice> dev1 = CreateObject<LrWpanNetDevice>();
-        Ptr<LrWpanNetDevice> dev2 = CreateObject<LrWpanNetDevice>();
+    // 임의 노드
+    Ptr<Node> someNode = pan.Get(5);
+    Ptr<LrWpanNetDevice> someNodeNetDevice = getLrWpanDevice(someNode, 0);
 
-        // 2-1. NetDevice에 mac address 설정
-            dev0->SetAddress(Mac16Address("00:01"));
-            dev1->SetAddress(Mac16Address("00:02"));
-            dev2->SetAddress(Mac16Address("00:03"));
+    // 모든 노드에 callback 설정
+    for(NodeContainer::Iterator nodePtr = pan.Begin(); nodePtr != pan.End(); nodePtr++)
+    {
+        Ptr<Node> node = *nodePtr;
+        someNodeNetDevice = DynamicCast<LrWpanNetDevice>(node->GetDevice(0));
 
-        // 2-2. NetDevice에 channel 설정: single-model-spectrum-channel.h???
-            // 2-2-1. SingleModelSpectrumChannel 인스턴스를 만들고
-                Ptr<SingleModelSpectrumChannel> singleModelSpectrumChannel =
-                    CreateObject<SingleModelSpectrumChannel>();
-
-            // 2-2-2. LogDistancePropagationLossModel 인스턴스도 만들고
-                Ptr<LogDistancePropagationLossModel> propModel = 
-                    CreateObject<LogDistancePropagationLossModel>();
-
-            // 2-2-3. ConstantSpeedPropagationDelayModel 인스턴스도 만들고
-                Ptr<ConstantSpeedPropagationDelayModel> delayModel =
-                    CreateObject<ConstantSpeedPropagationDelayModel>();
-            
-            // 2-2-4. 최종적으로 SingleModelSpectrumChannel에 LossModel, DelayModel을 설정
-                singleModelSpectrumChannel->AddPropagationLossModel(propModel);
-                singleModelSpectrumChannel->SetPropagationDelayModel(delayModel);
-
-        // 완성한 Channel을 NetDevice에 설정
-            dev0->SetChannel(singleModelSpectrumChannel);
-            dev1->SetChannel(singleModelSpectrumChannel);
-            dev2->SetChannel(singleModelSpectrumChannel);
-
-    // 3. MobilityModel 생성 -> 2번 과정 이전에 해도 됨?????
-        Ptr<ConstantPositionMobilityModel> sender0Mobility = 
-            CreateObject<ConstantPositionMobilityModel>();
-        Ptr<ConstantPositionMobilityModel> sender1Mobility = 
-            CreateObject<ConstantPositionMobilityModel>();
-        Ptr<ConstantPositionMobilityModel> sender2Mobility = 
-            CreateObject<ConstantPositionMobilityModel>();
-
-        // 3-1. MobilityModel에 Position 설정
-            sender0Mobility->SetPosition(Vector3D(0, 0, 0));
-            sender1Mobility->SetPosition(Vector3D(10, 10, 0));
-            sender2Mobility->SetPosition(Vector3D(0, 0, 10));
-
-        // 3-2. NetDevice의 Phy에 Mobility 설정
-            dev0->GetPhy()->SetMobility(sender0Mobility);
-            dev1->GetPhy()->SetMobility(sender1Mobility);
-            dev2->GetPhy()->SetMobility(sender2Mobility);
-    
-    // 완성한 NetDevice를 Node에 설정
-        n0->AddDevice(dev0);
-        n1->AddDevice(dev1);
-        n2->AddDevice(dev2);
-
-    // 4. Packet, McpsDataRequestParams 설정하기
-        // - MCPS: MAC Common Part Sublayer = MAC-SAP(MAC-Service Access Point)
-        //   - MAC의, APP<->MAC<->PHY 간 데이터 이동 인터페이스임
-        // 4-1. Packet 설정
-            std::string string = "Hello world!";
-            Ptr<Packet> p_str = Create<Packet>((uint8_t*) string.c_str(), string.length());
-            // Ptr<Packet> p_str2 = Create<Packet>((uint8_t*) string.c_str(), string.length());
-            // CreateObject는 생성자의 인자를 받지 않음
-            // Ptr<Packet> p_str = CreateObject<Packet>((uint8_t*) string.c_str(), string.length());
-
-        // 4-2. MCPS Request Params 정의 -> 왜 Ptr 안 씀?????
-            McpsDataRequestParams params; // TX 상황에서 쓰는 놈인가????
-            params.m_dstPanId = 0;
-            params.m_srcAddrMode = SHORT_ADDR;
-            params.m_dstAddrMode = SHORT_ADDR;
-            params.m_dstAddr = Mac16Address("00:03");
-            params.m_msduHandle = 0;            // msduHandle은 무엇인가???
-            params.m_txOptions = TX_OPTION_NONE; // 다른 모드도 있는가?????
-
-    // 5-1. Simulator에 싣기: n0 -> n2
-        Simulator::ScheduleWithContext(
-            1,                                  // 노드의 ID
-            Seconds(0.0),                       // 이벤트의 실행 시점(t+value)
-            &LrWpanMac::McpsDataRequest,        // 실행할 이벤트
-            dev0->GetMac(),                     // 나머지: McpsDataRequest의 인자로 들어감
-            params,                             // 나머지: McpsDataRequest의 인자로 들어감
-            p_str->Copy()                       // 나머지: McpsDataRequest의 인자로 들어감
+        someNodeNetDevice->GetMac()->SetMcpsDataConfirmCallback(
+            MakeBoundCallback(&McpsDataConfirm)
         );
 
-
-    // 5-2. Simulator에 싣기: n0 -> n1
-        params.m_dstAddr = Mac16Address("00:02");
-        Simulator::ScheduleWithContext(
-            1,                                  // 노드의 ID
-            Seconds(5),                         // 이벤트의 실행 시점(t+value)
-            &LrWpanMac::McpsDataRequest,        // 실행할 이벤트
-            dev0->GetMac(),                     // 나머지: McpsDataRequest의 인자로 들어감
-            params,                             // 나머지: McpsDataRequest의 인자로 들어감
-            p_str->Copy()                       // 나머지: McpsDataRequest의 인자로 들어감
+        someNodeNetDevice->GetMac()->SetMcpsDataIndicationCallback(
+            MakeBoundCallback(&McpsDataIndication)
         );
 
-    // 기타: 채널 바꾸기
-        // Ptr<LrWpanPhyPibAttributes> p = Create<LrWpanPhyPibAttributes>();
-        // p->phyCurrentChannel = 25;        
-        // LrWpanPibAttributeIdentifier id = phyCurrentChannel;
-        // dev0->GetPhy()->PlmeSetAttributeRequest(id, p);
+        Ptr<LrWpanCsmaCa> csmaCa = someNodeNetDevice->GetCsmaCa();
 
-    // 6. Callback 붙이기
-        // 6-1. MCPS-DATA.Indication: 데이터 수신 완료 시 호출
-        McpsDataIndicationCallback cb = MakeCallback(&DataIndication);
-        dev1->GetMac()->SetMcpsDataIndicationCallback(cb);
+        csmaCa->SetSlottedCsmaCa();
+        csmaCa->SetMacMinBE(0);
+        csmaCa->SetMacMinBE(0);
+        csmaCa->SetMacMaxCSMABackoffs(0);
+    }
 
-        McpsDataIndicationCallback cb2 = MakeCallback(&DataIndication);
-        dev2->GetMac()->SetMcpsDataIndicationCallback(cb2);
+    SetMcpsDataRequest(
+        createMcpsDataRequestParams(Mac16Address("00:01"), COORDINATOR_PAN_ID, SHORT_ADDR, TX_OPTION_NONE),
+        DynamicCast<LrWpanNetDevice>(pan.Get(4)->GetDevice(0))->GetMac(),
+        "message from node 5",
+        Seconds(0.1)
+    );
 
-        McpsDataConfirmCallback cb3 = MakeCallback(&mcpsDataConfirm);
-        dev0->GetMac()->SetMcpsDataConfirmCallback(cb3);
+    SetMcpsDataRequest(
+        createMcpsDataRequestParams(Mac16Address("00:01"), COORDINATOR_PAN_ID, SHORT_ADDR, TX_OPTION_NONE),
+        DynamicCast<LrWpanNetDevice>(pan.Get(7)->GetDevice(0))->GetMac(),
+        "message from node 8",
+        Seconds(0)
+    );
 
-    // 시뮬레이션은 1000초 후 종료
-    Simulator::Stop(Seconds(1000));
-    std::cout << Simulator::Now().As(Time::S) << ": simulation start" << std::endl;
+    SetMcpsDataRequest(
+        createMcpsDataRequestParams(Mac16Address("00:01"), COORDINATOR_PAN_ID, SHORT_ADDR, TX_OPTION_NONE),
+        DynamicCast<LrWpanNetDevice>(pan.Get(1)->GetDevice(0))->GetMac(),
+        "message from node 2",
+        Seconds(0)
+    );
+
+    coordinatorNetDevice->GetMac()->SetMcpsDataConfirmCallback(
+        MakeCallback(&McpsDataConfirm)
+    );
+
+    coordinatorNetDevice->GetMac()->SetMcpsDataIndicationCallback(
+        MakeCallback(&McpsDataIndication)
+    );
+
+
+    Ptr<LrWpanCsmaCa> csmaCa = coordinatorNetDevice->GetCsmaCa();
+    csmaCa->SetSlottedCsmaCa();
+    csmaCa->SetMacMinBE(0);
+    csmaCa->SetMacMinBE(0);
+    csmaCa->SetMacMaxCSMABackoffs(0);
+
+
+    Simulator::Stop(Seconds(100));
     Simulator::Run();
-    std::cout << "simulation end" << std::endl;
     Simulator::Destroy();
+
+
     return 0;
 }

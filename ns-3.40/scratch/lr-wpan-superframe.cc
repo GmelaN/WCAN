@@ -272,7 +272,7 @@ NodeContainer createNodes(uint32_t nodeCount)
 {
     NodeContainer nodes;
     MobilityHelper mobilityHelper;
-    LrWpanHelper lrWpanHelper;
+    LrWpanHelper lrWpanHelper;              // channel은 디폴트로
 
     nodes.Create(nodeCount);
 
@@ -382,7 +382,7 @@ int main(int argc, char *argv[]) {
     params2.m_dstAddrMode = SHORT_ADDR;
     params2.m_dstAddr = Mac16Address("FF:FE");
     params2.m_msduHandle = 0;
-    params2.m_txOptions = TX_OPTION_ACK;  // Enable direct transmission with Ack
+    params2.m_txOptions = TX_OPTION_NONE;  // Enable direct transmission with Ack
     Simulator::ScheduleWithContext(1,
                                 Seconds(2000),
                                 &LrWpanMac::McpsDataRequest,
