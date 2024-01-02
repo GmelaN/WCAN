@@ -7,7 +7,6 @@
 
 #include <ns3/csma-channel.h>
 
-
 // channel
 #include <ns3/single-model-spectrum-channel.h>
 
@@ -20,7 +19,6 @@
 
 #include <iostream>
 
-#define COORDINATOR_PAN_ID 5
 
 using namespace ns3;
 
@@ -54,6 +52,7 @@ static void SetMcpsDataRequest(McpsDataRequestParams params, Ptr<LrWpanMac> lrWp
     );
 }
 
+
 /// @brief MCPS-DATA.request params 구조체를 만듭니다.
 /// @param dstAddr 목적지 MAC 주소
 /// @param dstPanId 목적지 PAN ID
@@ -67,12 +66,14 @@ static McpsDataRequestParams createMcpsDataRequestParams(Mac16Address dstAddr, i
     McpsDataRequestParams params;
     params.m_dstAddrMode = params.m_srcAddrMode = addrMode;
     params.m_dstAddr = dstAddr;
-    params.m_dstPanId = dstPanId;
+    if(dstPanId >= 0)
+        params.m_dstPanId = dstPanId;
     params.m_txOptions = txOption;
     params.m_msduHandle = msduHandle++;
 
     return params;
 }
+
 
 //////////////////// CALLBACKS ////////////////////
 
@@ -80,6 +81,7 @@ static void McpsDataConfirm(McpsDataConfirmParams params)
 {
     NS_LOG_UNCOND(Simulator::Now().GetSeconds() << ": MCPS-DATA.confirm occured, status: " << params.m_status);
 }
+
 
 static void McpsDataIndication(McpsDataIndicationParams params, Ptr<Packet> p)
 {
@@ -94,9 +96,13 @@ static void McpsDataIndication(McpsDataIndicationParams params, Ptr<Packet> p)
 
 ///////////////////////////////////////////////////
 
+
+const int COORDINATOR_PAN_ID = 5;
+
+
 int main(int argc, char* argv[])
 {
-    LogComponentEnable("LrWpanMac", LOG_LEVEL_DEBUG);
+    // LogComponentEnable("LrWpanMac", LOG_LEVEL_ALL);
 
     // Container, Helper
     NodeContainer pan;
@@ -106,10 +112,6 @@ int main(int argc, char* argv[])
     pan.Create(10);
     NetDeviceContainer netDevices = lrWpanHelper.Install(pan);
     lrWpanHelper.CreateAssociatedPan(netDevices, COORDINATOR_PAN_ID);   // 첫 번째 노드가 코디네이터, PAN ID는 5
-
-    // 코디네이터
-    Ptr<Node> coordinator = pan.Get(0);
-    Ptr<LrWpanNetDevice> coordinatorNetDevice = getLrWpanDevice(coordinator, 0);
 
     // 임의 노드
     Ptr<Node> someNode = pan.Get(5);
@@ -131,53 +133,35 @@ int main(int argc, char* argv[])
 
         Ptr<LrWpanCsmaCa> csmaCa = someNodeNetDevice->GetCsmaCa();
 
-        csmaCa->SetSlottedCsmaCa();
-        csmaCa->SetMacMinBE(0);
-        csmaCa->SetMacMinBE(0);
-        csmaCa->SetMacMaxCSMABackoffs(0);
+        // csmaCa->SetSlottedCsmaCa();
+        // csmaCa->SetMacMinBE(1);
+        // csmaCa->SetMacMaxCSMABackoffs(0);
     }
 
     SetMcpsDataRequest(
-        createMcpsDataRequestParams(Mac16Address("00:01"), COORDINATOR_PAN_ID, SHORT_ADDR, TX_OPTION_NONE),
+        createMcpsDataRequestParams(Mac16Address("00:01"), -1, SHORT_ADDR, TX_OPTION_NONE),
         DynamicCast<LrWpanNetDevice>(pan.Get(4)->GetDevice(0))->GetMac(),
         "message from node 5",
         Seconds(0.1)
     );
 
     SetMcpsDataRequest(
-        createMcpsDataRequestParams(Mac16Address("00:01"), COORDINATOR_PAN_ID, SHORT_ADDR, TX_OPTION_NONE),
+        createMcpsDataRequestParams(Mac16Address("00:01"), -1, SHORT_ADDR, TX_OPTION_NONE),
         DynamicCast<LrWpanNetDevice>(pan.Get(7)->GetDevice(0))->GetMac(),
         "message from node 8",
-        Seconds(0)
+        Seconds(0.11)
     );
 
     SetMcpsDataRequest(
-        createMcpsDataRequestParams(Mac16Address("00:01"), COORDINATOR_PAN_ID, SHORT_ADDR, TX_OPTION_NONE),
+        createMcpsDataRequestParams(Mac16Address("00:01"), -1, SHORT_ADDR, TX_OPTION_NONE),
         DynamicCast<LrWpanNetDevice>(pan.Get(1)->GetDevice(0))->GetMac(),
         "message from node 2",
-        Seconds(0)
+        Seconds(0.12)
     );
 
-    coordinatorNetDevice->GetMac()->SetMcpsDataConfirmCallback(
-        MakeCallback(&McpsDataConfirm)
-    );
-
-    coordinatorNetDevice->GetMac()->SetMcpsDataIndicationCallback(
-        MakeCallback(&McpsDataIndication)
-    );
-
-
-    Ptr<LrWpanCsmaCa> csmaCa = coordinatorNetDevice->GetCsmaCa();
-    csmaCa->SetSlottedCsmaCa();
-    csmaCa->SetMacMinBE(0);
-    csmaCa->SetMacMinBE(0);
-    csmaCa->SetMacMaxCSMABackoffs(0);
-
-
-    Simulator::Stop(Seconds(100));
+    Simulator::Stop(Seconds(10000));
     Simulator::Run();
     Simulator::Destroy();
-
 
     return 0;
 }

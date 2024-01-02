@@ -207,7 +207,7 @@ McpsDataIndication(Ptr<LrWpanNetDevice> device, McpsDataIndicationParams params,
         << Simulator::Now().As(Time::S)
         << ": device "
         << device->GetMac()->GetShortAddress()
-        << "received message \""
+        << " received message \""
         << packetBody
         << "\""
         << std::endl
@@ -314,24 +314,31 @@ NodeContainer createNodes(uint32_t nodeCount)
 
 
 int main(int argc, char *argv[]) {
+    // 코디네이터의 PAN ID, 채널, MAC 주소
     const int COORDINATOR_PAN_ID = 5;
     const int COORDINATOR_CHANNEL = 12;
     const char* COORDINATOR_MAC_ADDR = "CA:FE";
 
 
-    // 디바이스 생성
-    NodeContainer devices = createNodes(5);
+    LogComponentEnable("LrWpanMac", LOG_LEVEL_ALL);
+
+
+    // 10개의 디바이스
+    NodeContainer devices = createNodes(10);
     Ptr<Node> coordinator = CreateObject<Node>();
+
+    // 1개의 코디네이터
     Ptr<LrWpanNetDevice> coordinatorNetDevice = CreateObject<LrWpanNetDevice>();
     coordinator->AddDevice(coordinatorNetDevice);
 
-    // 코디네이터 설정
+    // 코디네이터 설정: 채널, 위치, MAC 주소
     Ptr<ConstantPositionMobilityModel> mobilityModel = CreateObject<ConstantPositionMobilityModel>();
     mobilityModel->SetPosition(Vector3D(0, 0, 0));
     coordinatorNetDevice->GetPhy()->SetMobility(mobilityModel);
     coordinatorNetDevice->SetChannel(DynamicCast<SpectrumChannel>(devices.Get(0)->GetDevice(0)->GetChannel()));
     coordinatorNetDevice->GetMac()->SetShortAddress(Mac16Address(COORDINATOR_MAC_ADDR));
 
+    // 코디네이터 콜백 설정: MLME-ASSOCIATE.indication | MLME-COMM-STATUS.indication | MCPS-DATA.indication
     coordinatorNetDevice->GetMac()->SetMlmeAssociateIndicationCallback(
         MakeBoundCallback(&MlmeAssociateIndication, coordinatorNetDevice));
     coordinatorNetDevice->GetMac()->SetMlmeCommStatusIndicationCallback(
@@ -339,34 +346,35 @@ int main(int argc, char *argv[]) {
     coordinatorNetDevice->GetMac()->SetMcpsDataIndicationCallback(
         MakeBoundCallback(&McpsDataIndication, coordinatorNetDevice));
 
+    // 비콘 신호 출력 시작
     MlmeStartRequestParams params;
     params.m_panCoor = true;
     params.m_PanId = COORDINATOR_PAN_ID;
-    params.m_bcnOrd = 14;
-    params.m_sfrmOrd = 6;
+    params.m_bcnOrd = 14;                       // macBeaconOrder: 코디네이터의 비콘 프레임 전송 간격
+    params.m_sfrmOrd = 6;                       // macSuperframeOrder: 비콘 프레임을 포함하는 슈퍼 프레임의 길이
     params.m_logCh = COORDINATOR_CHANNEL;
     params.m_coorRealgn = false;
 
-    // 다른 디바이스에 PAN의 존재를 알리기 위해, MLME-START.request로 비콘 신호 전송 시작
     Simulator::ScheduleWithContext(coordinator->GetId(),
-                                   Seconds(0.0),
+                                   Seconds(2.0),
                                    &LrWpanMac::MlmeStartRequest,
                                    coordinatorNetDevice->GetMac(),
                                    params);
 
-    // 다른 디바이스 설정
+    // 디바이스 설정
     for(NodeContainer::Iterator i = devices.Begin(); i != devices.End(); i++) {
         Ptr<Node> node = *i;
         Ptr<LrWpanNetDevice> netDevice = DynamicCast<LrWpanNetDevice>(node->GetDevice(0));
 
-        // 스캔 확인 콜백, 코디네이터와의 연결 확인 콜백, 데이터 수신 콜백 설정
+        // MLME-SCAN.confirm | MLME-ASSOCIATE.confirm | MCPS-DATA.indication | MCPS-DATA.confirm
         netDevice->GetMac()->SetMlmeScanConfirmCallback(
             MakeBoundCallback(&MlmeScanConfirm, netDevice));
         netDevice->GetMac()->SetMlmeAssociateConfirmCallback(
             MakeBoundCallback(&MlmeAssociateConfirm, netDevice));
         netDevice->GetMac()->SetMcpsDataIndicationCallback(
         MakeBoundCallback(&McpsDataIndication, netDevice));
-
+        netDevice->GetMac()->SetMcpsDataConfirmCallback(
+            MakeBoundCallback(&McpsDataConfirm, netDevice));
 
         // Devices initiate channels scan on channels 11, 12, 13, and 14 looking for beacons
         // Scan Channels represented by bits 0-26  (27 LSB)
@@ -374,7 +382,7 @@ int main(int argc, char *argv[]) {
         //                           |  |
         // 0x7800  = 0000000000000000111100000000000
 
-        // 코디네이터 스캔
+        // 코디네이터의 비콘 신호 스캔 시작
         MlmeScanRequestParams scanParams;
         scanParams.m_chPage = 0;
         scanParams.m_scanChannels = 0x7800;
@@ -383,28 +391,24 @@ int main(int argc, char *argv[]) {
 
         // We start the scanning process 100 milliseconds apart for each device
         // to avoid a storm of association requests with the coordinators
-        // 디바이스 개별 스캔 시작
-        Time jitter = Seconds(2) + MilliSeconds(std::distance(devices.Begin() + 1, i) * 100);
+        // 디바이스별 비콘 신호 스캔 시작: MLME-SCAN.request
+        Time jitter = Seconds(2) + MilliSeconds(std::distance(devices.Begin(), i) * 100);
         Simulator::ScheduleWithContext(node->GetId(),
                                        jitter,
                                        &LrWpanMac::MlmeScanRequest,
                                        netDevice->GetMac(),
                                        scanParams);
-
-        // 데이터 송신 결과를 출력하는 콜백 함수
-        netDevice->GetMac()->SetMcpsDataConfirmCallback(
-            MakeBoundCallback(&McpsDataConfirm, netDevice)
-        );
     }
 
+    // 여기부터는 PAN이 잘 구성되었다고 가정하고 진행
 
     // 한 디바이스에서 코디네이터로 데이터 전송
+    // 패킷 만들기
     std::string string = "Hi there!";
     Ptr<Packet> packet = Create<Packet>((uint8_t*) string.c_str(), string.length());
 
-    // 한 NetDeivce
+    // 임의 디바이스에서 코디네이터로 데이터 전송
     Ptr<LrWpanNetDevice> someNetDevice = DynamicCast<LrWpanNetDevice>(devices.Get(0)->GetDevice(0));
-
     McpsDataRequestParams params2;
     params2.m_dstPanId = COORDINATOR_PAN_ID;
     params2.m_srcAddrMode = SHORT_ADDR;
@@ -420,7 +424,7 @@ int main(int argc, char *argv[]) {
         packet
     );
 
-    Simulator::Stop(Seconds(100000));
+    Simulator::Stop(Seconds(2000));
     Simulator::Run();
     Simulator::Destroy();
 
